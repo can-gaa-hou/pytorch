@@ -97,7 +97,7 @@ def main():
         },
         entry_points={
             "torch.backends": [
-                "device_backend = torch_openreg:_autoload",
+                "torch_openreg = torch_openreg:_autoload",
             ],
         },
     )
