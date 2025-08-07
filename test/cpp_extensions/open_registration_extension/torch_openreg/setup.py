@@ -14,7 +14,10 @@ BASE_DIR = os.path.dirname(os.path.realpath(__file__))
 
 
 def get_pytorch_dir():
+    os.environ["TORCH_DEVICE_BACKEND_AUTOLOAD"] = "0"
     import torch
+
+    os.environ.pop("TORCH_DEVICE_BACKEND_AUTOLOAD")
 
     return os.path.dirname(os.path.realpath(torch.__file__))
 
