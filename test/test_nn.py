@@ -49,7 +49,7 @@ from torch.testing._internal.common_device_type import dtypesIfMPS, instantiate_
     dtypesIfCUDA, precisionOverride, onlyCUDA, onlyCPU, onlyAccelerator, \
     skipCUDAIf, skipCUDAIfNoCudnn, skipMPSIf, skipMPS, \
     onlyNativeDeviceTypes, deviceCountAtLeast, largeTensorTest, expectedFailureMeta, expectedFailureMPS, \
-    skipMeta, get_all_device_types
+    skipMeta
 from torch.testing._internal.common_modules import module_inputs_torch_nn_LinearCrossEntropyLoss
 
 from hypothesis import given
@@ -3050,144 +3050,6 @@ tensor(..., device='meta', size=(1,), requires_grad=True)""")
         for mode in ['RNN', 'GRU']:
             with self.assertRaisesRegex(ValueError, error_msg):
                 rnn = getattr(nn, mode)(30, 20, 2, proj_size=10)
-
-    @unittest.skipIf(not TEST_CUDNN, "needs cudnn")
-    @set_default_dtype(torch.double)
-    def test_RNN_dropout(self):
-        # checking the assumption that cuDNN sticks dropout in between
-        # RNN layers
-        for p in (0, 0.276, 0.731, 1):
-            for train in (True, False):
-                for cuda in (True, False):
-                    rnn = nn.RNN(10, 1000, 2, bias=False, dropout=p, nonlinearity='relu')
-                    if cuda:
-                        rnn.cuda()
-
-                    if train:
-                        rnn.train()
-                    else:
-                        rnn.eval()
-                    rnn.weight_ih_l0.data.fill_(1)
-                    rnn.weight_hh_l0.data.fill_(1)
-                    rnn.weight_ih_l1.data.fill_(1)
-                    rnn.weight_hh_l1.data.fill_(1)
-                    input = torch.ones(1, 1, 10)
-                    hx = torch.zeros(2, 1, 1000)
-                    if cuda:
-                        input = input.cuda()
-                        hx = hx.cuda()
-
-                    output, hy = rnn(input, hx)
-                    self.assertEqual(output.data.min(), output.data.max())
-                    output_val = output.data[0][0][0]
-                    if p == 0 or not train:
-                        self.assertEqual(output_val, 10000)
-                    elif p == 1:
-                        self.assertEqual(output_val, 0)
-                    else:
-                        self.assertGreater(output_val, 8000)
-                        self.assertLess(output_val, 12000)
-                        denorm_mod = (output_val * (1 - p)) % 10
-                        self.assertLess(min(denorm_mod, 10 - denorm_mod), 1e-2)
-
-                    self.assertEqual(hy[0].data.min(), hy[0].data.max())
-                    self.assertEqual(hy[1].data.min(), hy[1].data.max())
-                    self.assertEqual(hy.data[0][0][0], 10)
-                    self.assertEqual(hy.data[1][0][0], output_val)
-
-    @unittest.skipIf(not TEST_CUDNN, "needs cudnn")
-    @set_default_dtype(torch.double)
-    def test_error_RNN_seq_len_zero(self):
-        # checking error message when RNN has seq_len = 0
-        for module in (nn.RNN, nn.LSTM, nn.GRU):
-            for bidirectional in [True, False]:
-                for device in get_all_device_types():
-                    input = torch.ones(0, 10, 5)
-                    rnn = module(5, 6, bidirectional=bidirectional)
-                    if device == 'cuda':
-                        rnn.cuda()
-                        input = input.cuda()
-
-                    with self.assertRaisesRegex(RuntimeError, "Expected sequence length to be larger than 0 in RNN"):
-                        rnn(input)
-
-    @unittest.skipIf(not TEST_CUDNN, "needs cudnn")
-    def test_RNN_dropout_state(self):
-        for p in (0, 0.1234):
-            for train in (True, False):
-                for cuda in (True, False):
-                    rnn = nn.RNN(100, 100, 2, bias=False, dropout=p, nonlinearity='relu')
-                    if cuda:
-                        rnn.cuda()
-
-                    if train:
-                        rnn.train()
-                    else:
-                        rnn.eval()
-                    input = torch.rand(1, 1, 100)
-                    hx = torch.rand(2, 1, 100)
-                    if cuda:
-                        input = input.cuda()
-                        hx = hx.cuda()
-
-                    output1, hy1 = rnn(input, hx)
-                    output2, hy2 = rnn(input, hx)
-
-                    buf = io.BytesIO()
-                    rnn_pickle = torch.save(rnn, buf)
-                    buf.seek(0)
-                    # weights_only=False as this is legacy code that saves the model
-                    rnn2 = torch.load(buf, weights_only=False)
-                    rnn2.flatten_parameters()
-                    output3, hy3 = rnn2(input, hx)
-
-                    if p == 0 or not train:
-                        self.assertEqual(output1, output2)
-                        self.assertEqual(output1, output3)
-                        self.assertEqual(hy1, hy2)
-                        self.assertEqual(hy1, hy3)
-                    else:
-                        self.assertNotEqual(output1, output2)
-                        self.assertNotEqual(output1, output3)
-                        self.assertNotEqual(hy1, hy2)
-                        self.assertNotEqual(hy1, hy3)
-
-    @unittest.skipIf(not TEST_CUDNN, "needs cudnn")
-    @set_default_dtype(torch.double)
-    def test_RNN_change_dropout(self):
-        for train, cuda in product((True, False), repeat=2):
-            rnn = nn.RNN(100, 100, 2, dropout=0, nonlinearity='relu')
-            input = torch.rand(3, 2, 100)
-            if cuda:
-                input.data = input.data.cuda()
-                rnn.cuda()
-
-            if train:
-                rnn.train()
-            else:
-                rnn.eval()
-
-            prev_output = None
-            for p in (0, 0.5, 0, 0.7, 0.2, 1, 0.2, 0):
-                rnn.dropout = p
-                output1, hy1 = rnn(input)
-                output2, hy2 = rnn(input)
-
-                if p == 0 or p == 1 or not train:
-                    self.assertEqual(output1, output2)
-                    self.assertEqual(hy1, hy2)
-                else:
-                    self.assertNotEqual(output1, output2)
-                    self.assertNotEqual(hy1, hy2)
-
-                if prev_output is not None:
-                    if not train:
-                        self.assertEqual(output1.data, prev_output)
-                        self.assertEqual(output2.data, prev_output)
-                    else:
-                        self.assertNotEqual(output1.data, prev_output)
-                        self.assertNotEqual(output2.data, prev_output)
-                prev_output = output1.data
 
     def test_inplace_thnn(self):
         modules = [nn.ReLU, nn.ELU, nn.SELU, nn.CELU, nn.RReLU]
@@ -15919,6 +15781,125 @@ if __name__ == '__main__':
     def test_RNN_cpu_vs_device_with_dropout(self, device):
         # Because of dropout randomness, can only compare dropout=0 and dropout=1
         self._test_RNN_cpu_vs_device(device, 1)
+
+    @skipMPS
+    @skipCUDAIfNoCudnn
+    @set_default_dtype(torch.double)
+    def test_RNN_dropout(self, device):
+        # checking the assumption that cuDNN sticks dropout in between
+        # RNN layers
+        for p in (0, 0.276, 0.731, 1):
+            for train in (True, False):
+                rnn = nn.RNN(10, 1000, 2, bias=False, dropout=p, nonlinearity='relu').to(device)
+                if train:
+                    rnn.train()
+                else:
+                    rnn.eval()
+                rnn.weight_ih_l0.data.fill_(1)
+                rnn.weight_hh_l0.data.fill_(1)
+                rnn.weight_ih_l1.data.fill_(1)
+                rnn.weight_hh_l1.data.fill_(1)
+                input = torch.ones(1, 1, 10, device=device)
+                hx = torch.zeros(2, 1, 1000, device=device)
+
+                output, hy = rnn(input, hx)
+                self.assertEqual(output.data.min(), output.data.max())
+                output_val = output.data[0][0][0]
+                if p == 0 or not train:
+                    self.assertEqual(output_val, 10000)
+                elif p == 1:
+                    self.assertEqual(output_val, 0)
+                else:
+                    self.assertGreater(output_val, 8000)
+                    self.assertLess(output_val, 12000)
+                    denorm_mod = (output_val * (1 - p)) % 10
+                    self.assertLess(min(denorm_mod, 10 - denorm_mod), 1e-2)
+
+                self.assertEqual(hy[0].data.min(), hy[0].data.max())
+                self.assertEqual(hy[1].data.min(), hy[1].data.max())
+                self.assertEqual(hy.data[0][0][0], 10)
+                self.assertEqual(hy.data[1][0][0], output_val)
+
+    @skipMPS
+    @set_default_dtype(torch.double)
+    def test_error_RNN_seq_len_zero(self, device):
+        # checking error message when RNN has seq_len = 0
+        for module in (nn.RNN, nn.LSTM, nn.GRU):
+            for bidirectional in [True, False]:
+                input = torch.ones(0, 10, 5, device=device)
+                rnn = module(5, 6, bidirectional=bidirectional).to(device)
+
+                with self.assertRaisesRegex(RuntimeError, "Expected sequence length to be larger than 0 in RNN"):
+                    rnn(input)
+
+    @skipMPS
+    @skipCUDAIfNoCudnn
+    def test_RNN_dropout_state(self, device):
+        for p in (0, 0.1234):
+            for train in (True, False):
+                rnn = nn.RNN(100, 100, 2, bias=False, dropout=p, nonlinearity='relu').to(device)
+                if train:
+                    rnn.train()
+                else:
+                    rnn.eval()
+                input = torch.rand(1, 1, 100, device=device)
+                hx = torch.rand(2, 1, 100, device=device)
+
+                output1, hy1 = rnn(input, hx)
+                output2, hy2 = rnn(input, hx)
+
+                buf = io.BytesIO()
+                rnn_pickle = torch.save(rnn, buf)
+                buf.seek(0)
+                # weights_only=False as this is legacy code that saves the model
+                rnn2 = torch.load(buf, weights_only=False)
+                rnn2.flatten_parameters()
+                output3, hy3 = rnn2(input, hx)
+
+                if p == 0 or not train:
+                    self.assertEqual(output1, output2)
+                    self.assertEqual(output1, output3)
+                    self.assertEqual(hy1, hy2)
+                    self.assertEqual(hy1, hy3)
+                else:
+                    self.assertNotEqual(output1, output2)
+                    self.assertNotEqual(output1, output3)
+                    self.assertNotEqual(hy1, hy2)
+                    self.assertNotEqual(hy1, hy3)
+
+    @skipMPS
+    @skipCUDAIfNoCudnn
+    @set_default_dtype(torch.double)
+    def test_RNN_change_dropout(self, device):
+        for train in (True, False):
+            rnn = nn.RNN(100, 100, 2, dropout=0, nonlinearity='relu').to(device)
+            input = torch.rand(3, 2, 100, device=device)
+            if train:
+                rnn.train()
+            else:
+                rnn.eval()
+
+            prev_output = None
+            for p in (0, 0.5, 0, 0.7, 0.2, 1, 0.2, 0):
+                rnn.dropout = p
+                output1, hy1 = rnn(input)
+                output2, hy2 = rnn(input)
+
+                if p == 0 or p == 1 or not train:
+                    self.assertEqual(output1, output2)
+                    self.assertEqual(hy1, hy2)
+                else:
+                    self.assertNotEqual(output1, output2)
+                    self.assertNotEqual(hy1, hy2)
+
+                if prev_output is not None:
+                    if not train:
+                        self.assertEqual(output1.data, prev_output)
+                        self.assertEqual(output2.data, prev_output)
+                    else:
+                        self.assertNotEqual(output1.data, prev_output)
+                        self.assertNotEqual(output2.data, prev_output)
+                prev_output = output1.data
 
 
 class TestFunctionalPickle(TestCase):
