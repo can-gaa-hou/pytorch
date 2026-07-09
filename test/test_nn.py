@@ -3952,133 +3952,6 @@ tensor(..., device='meta', size=(1,), requires_grad=True)""")
         with self.assertRaisesRegex(NotImplementedError, "affine_grid only supports 4D and 5D sizes"):
             F.affine_grid(theta, torch.Size([1, 1, 2, 2, 2, 2]), align_corners=False)
 
-    @parametrize_test('device', ['cpu'] + (['cuda'] if TEST_CUDA else []))
-    @parametrize_test('nd', [2, 3])
-    def test_affine_grid_backward_cl_cf_consistency(self, device, nd):
-        # Test based on reported issue: https://github.com/pytorch/pytorch/issues/124154
-
-        theta = torch.rand([6, nd, nd + 1], requires_grad=True, device=device)
-        size = [6, 3, 4, 5] if nd == 2 else [6, 3, 4, 5, 5]
-        grid = torch.nn.functional.affine_grid(theta, size, align_corners=False)
-
-        grad_tensor = torch.rand(grid.shape, device=device)
-
-        memory_format_cl = torch.channels_last if nd == 2 else torch.channels_last_3d
-        grad_tensor_cl = grad_tensor.contiguous(memory_format=memory_format_cl)
-
-        if theta.grad is not None:
-            raise AssertionError("expected theta.grad to be None")
-        grid.backward(grad_tensor_cl)
-        theta_grad_cl = theta.grad.clone().contiguous()
-
-        theta.grad.zero_()
-        grid.backward(grad_tensor)
-        theta_grad_cf = theta.grad
-
-        self.assertEqual(theta_grad_cf, theta_grad_cl)
-
-    @set_default_dtype(torch.double)
-    def test_affine_grid(self):
-        # test known input on CPU
-        input = torch.arange(1., 7).view(1, 2, 3)
-        output = F.affine_grid(input, torch.Size([1, 1, 2, 2]), align_corners=True)
-        groundtruth = torch.tensor(
-            [[[0., -3.], [2., 5.]], [[4., 7.], [6., 15.]]]).view(1, 2, 2, 2)
-        self.assertEqual(output, groundtruth)
-        output = F.affine_grid(input, torch.Size([1, 1, 2, 2]), align_corners=False)
-        groundtruth = torch.tensor(
-            [[[1.5, 1.5], [2.5, 5.5]], [[3.5, 6.5], [4.5, 10.5]]]).view(1, 2, 2, 2)
-        self.assertEqual(output, groundtruth)
-
-        for align_corners in (True, False):
-            # do gradcheck
-            N = random.randint(1, 8)
-            C = random.randint(1, 8)
-            H = random.randint(1, 8)
-            W = random.randint(1, 8)
-            sz = torch.Size([N, C, H, W])
-            inp = torch.randn(N, 2, 3, requires_grad=True)
-            with warnings.catch_warnings(record=True):
-                warnings.simplefilter("always")  # python2 requires this so other tests can trigger
-                self.assertTrue(gradcheck(
-                    lambda inp: F.affine_grid(inp, sz, align_corners=align_corners),
-                    (inp,), check_forward_ad=True))
-
-        # test CPU against CUDA
-        if TEST_CUDA:
-            N = random.randint(1, 8)
-            C = random.randint(1, 8)
-            H = random.randint(1, 8)
-            W = random.randint(1, 8)
-            sz = torch.Size([N, C, H, W])
-            for align_corners in (True, False):
-                input_cpu = torch.randn(N, 2, 3, requires_grad=True)
-                with warnings.catch_warnings(record=True):
-                    warnings.simplefilter("always")  # python2 requires this so other tests can trigger
-                    out_cpu = F.affine_grid(input_cpu, sz, align_corners=align_corners)
-                gradients = torch.randn(out_cpu.size())
-                out_cpu.backward(gradients)
-                input_gpu = input_cpu.detach().cuda().requires_grad_()
-                with warnings.catch_warnings(record=True):
-                    warnings.simplefilter("always")  # python2 requires this so other tests can trigger
-                    out_cuda = F.affine_grid(input_gpu, sz, align_corners=align_corners)
-                out_cuda.backward(gradients.cuda())
-                self.assertEqual(out_cpu, out_cuda)
-                self.assertEqual(input_cpu.grad, input_gpu.grad)
-
-    @set_default_dtype(torch.double)
-    def test_affine_grid_3d(self):
-        # test known input on CPU
-        input = torch.arange(1., 13).view(1, 3, 4)
-        output = F.affine_grid(input, torch.Size([1, 1, 2, 2, 2]), align_corners=True)
-        groundtruth = torch.tensor(
-            [[[[[-2., -10., -18.], [0., 0., 0.]], [[2., 2., 2.], [4., 12., 20.]]],
-              [[[4., 4., 4.], [6., 14., 22.]], [[8., 16., 24.], [10., 26., 42.]]]]]).view(1, 2, 2, 2, 3)
-        self.assertEqual(output, groundtruth)
-        output = F.affine_grid(input, torch.Size([1, 1, 2, 2, 2]), align_corners=False)
-        groundtruth = torch.tensor(
-            [[[[[1., -1., -3.], [2., 4., 6.]], [[3., 5., 7.], [4., 10., 16.]]],
-              [[[4., 6., 8.], [5., 11., 17.]], [[6., 12., 18.], [7., 17., 27.]]]]]).view(1, 2, 2, 2, 3)
-        self.assertEqual(output, groundtruth)
-
-        for align_corners in (True, False):
-            # do gradcheck
-            N = random.randint(1, 8)
-            C = random.randint(1, 8)
-            D = random.randint(1, 8)
-            H = random.randint(1, 8)
-            W = random.randint(1, 8)
-            sz = torch.Size([N, C, D, H, W])
-            inp = torch.randn(N, 3, 4, requires_grad=True)
-            with warnings.catch_warnings(record=True):
-                warnings.simplefilter("always")  # python2 requires this so other tests can trigger
-                self.assertTrue(gradcheck(
-                    lambda inp: F.affine_grid(inp, sz, align_corners=align_corners),
-                    (inp,), check_forward_ad=True))
-
-        # test CPU against CUDA
-        if TEST_CUDA:
-            N = random.randint(1, 8)
-            C = random.randint(1, 8)
-            D = random.randint(1, 8)
-            H = random.randint(1, 8)
-            W = random.randint(1, 8)
-            sz = torch.Size([N, C, D, H, W])
-            for align_corners in (True, False):
-                input_cpu = torch.randn(N, 3, 4, requires_grad=True)
-                with warnings.catch_warnings(record=True):
-                    warnings.simplefilter("always")  # python2 requires this so other tests can trigger
-                    out_cpu = F.affine_grid(input_cpu, sz, align_corners=align_corners)
-                gradients = torch.randn(out_cpu.size())
-                out_cpu.backward(gradients)
-                input_gpu = input_cpu.detach().cuda().requires_grad_()
-                with warnings.catch_warnings(record=True):
-                    warnings.simplefilter("always")  # python2 requires this so other tests can trigger
-                    out_cuda = F.affine_grid(input_gpu, sz, align_corners=align_corners)
-                out_cuda.backward(gradients.cuda())
-                self.assertEqual(out_cpu, out_cuda)
-                self.assertEqual(input_cpu.grad, input_gpu.grad)
-
     def test_channel_shuffle_return_alias_of_self(self):
         # gh-76616: nn.ChannelShuffle will return alias of self with an empty input tensor
         groups = 3
@@ -15906,6 +15779,134 @@ if __name__ == '__main__':
                     align_corners=align_corners,
                 )
                 self.assertEqual(output_tensor_2d_x[0, 0, 0, :], output_tensor_3d_z[0, 0, 0, 0, :], atol=0, rtol=0)
+
+    @parametrize_test('nd', [2, 3])
+    def test_affine_grid_backward_cl_cf_consistency(self, device, nd):
+        # Test based on reported issue: https://github.com/pytorch/pytorch/issues/124154
+
+        theta = torch.rand([6, nd, nd + 1], requires_grad=True, device=device)
+        size = [6, 3, 4, 5] if nd == 2 else [6, 3, 4, 5, 5]
+        grid = torch.nn.functional.affine_grid(theta, size, align_corners=False)
+
+        grad_tensor = torch.rand(grid.shape, device=device)
+
+        memory_format_cl = torch.channels_last if nd == 2 else torch.channels_last_3d
+        grad_tensor_cl = grad_tensor.contiguous(memory_format=memory_format_cl)
+
+        if theta.grad is not None:
+            raise AssertionError("expected theta.grad to be None")
+        grid.backward(grad_tensor_cl)
+        theta_grad_cl = theta.grad.clone().contiguous()
+
+        theta.grad.zero_()
+        grid.backward(grad_tensor)
+        theta_grad_cf = theta.grad
+
+        self.assertEqual(theta_grad_cf, theta_grad_cl)
+
+    @skipMPS
+    @set_default_dtype(torch.double)
+    def test_affine_grid(self, device):
+        # test known input on CPU
+        input = torch.arange(1., 7).view(1, 2, 3)
+        output = F.affine_grid(input, torch.Size([1, 1, 2, 2]), align_corners=True)
+        groundtruth = torch.tensor(
+            [[[0., -3.], [2., 5.]], [[4., 7.], [6., 15.]]]).view(1, 2, 2, 2)
+        self.assertEqual(output, groundtruth)
+        output = F.affine_grid(input, torch.Size([1, 1, 2, 2]), align_corners=False)
+        groundtruth = torch.tensor(
+            [[[1.5, 1.5], [2.5, 5.5]], [[3.5, 6.5], [4.5, 10.5]]]).view(1, 2, 2, 2)
+        self.assertEqual(output, groundtruth)
+
+        for align_corners in (True, False):
+            # do gradcheck
+            N = random.randint(1, 8)
+            C = random.randint(1, 8)
+            H = random.randint(1, 8)
+            W = random.randint(1, 8)
+            sz = torch.Size([N, C, H, W])
+            inp = torch.randn(N, 2, 3, requires_grad=True)
+            with warnings.catch_warnings(record=True):
+                warnings.simplefilter("always")  # python2 requires this so other tests can trigger
+                self.assertTrue(gradcheck(
+                    lambda inp: F.affine_grid(inp, sz, align_corners=align_corners),
+                    (inp,), check_forward_ad=True))
+
+        # test CPU against the device
+        if torch.device(device).type != 'cpu':
+            N = random.randint(1, 8)
+            C = random.randint(1, 8)
+            H = random.randint(1, 8)
+            W = random.randint(1, 8)
+            sz = torch.Size([N, C, H, W])
+            for align_corners in (True, False):
+                input_cpu = torch.randn(N, 2, 3, requires_grad=True)
+                with warnings.catch_warnings(record=True):
+                    warnings.simplefilter("always")  # python2 requires this so other tests can trigger
+                    out_cpu = F.affine_grid(input_cpu, sz, align_corners=align_corners)
+                gradients = torch.randn(out_cpu.size())
+                out_cpu.backward(gradients)
+                input_device = input_cpu.detach().to(device).requires_grad_()
+                with warnings.catch_warnings(record=True):
+                    warnings.simplefilter("always")  # python2 requires this so other tests can trigger
+                    out_device = F.affine_grid(input_device, sz, align_corners=align_corners)
+                out_device.backward(gradients.to(device))
+                self.assertEqual(out_cpu, out_device)
+                self.assertEqual(input_cpu.grad, input_device.grad)
+
+    @skipMPS
+    @set_default_dtype(torch.double)
+    def test_affine_grid_3d(self, device):
+        # test known input on CPU
+        input = torch.arange(1., 13).view(1, 3, 4)
+        output = F.affine_grid(input, torch.Size([1, 1, 2, 2, 2]), align_corners=True)
+        groundtruth = torch.tensor(
+            [[[[[-2., -10., -18.], [0., 0., 0.]], [[2., 2., 2.], [4., 12., 20.]]],
+              [[[4., 4., 4.], [6., 14., 22.]], [[8., 16., 24.], [10., 26., 42.]]]]]).view(1, 2, 2, 2, 3)
+        self.assertEqual(output, groundtruth)
+        output = F.affine_grid(input, torch.Size([1, 1, 2, 2, 2]), align_corners=False)
+        groundtruth = torch.tensor(
+            [[[[[1., -1., -3.], [2., 4., 6.]], [[3., 5., 7.], [4., 10., 16.]]],
+              [[[4., 6., 8.], [5., 11., 17.]], [[6., 12., 18.], [7., 17., 27.]]]]]).view(1, 2, 2, 2, 3)
+        self.assertEqual(output, groundtruth)
+
+        for align_corners in (True, False):
+            # do gradcheck
+            N = random.randint(1, 8)
+            C = random.randint(1, 8)
+            D = random.randint(1, 8)
+            H = random.randint(1, 8)
+            W = random.randint(1, 8)
+            sz = torch.Size([N, C, D, H, W])
+            inp = torch.randn(N, 3, 4, requires_grad=True)
+            with warnings.catch_warnings(record=True):
+                warnings.simplefilter("always")  # python2 requires this so other tests can trigger
+                self.assertTrue(gradcheck(
+                    lambda inp: F.affine_grid(inp, sz, align_corners=align_corners),
+                    (inp,), check_forward_ad=True))
+
+        # test CPU against the device
+        if torch.device(device).type != 'cpu':
+            N = random.randint(1, 8)
+            C = random.randint(1, 8)
+            D = random.randint(1, 8)
+            H = random.randint(1, 8)
+            W = random.randint(1, 8)
+            sz = torch.Size([N, C, D, H, W])
+            for align_corners in (True, False):
+                input_cpu = torch.randn(N, 3, 4, requires_grad=True)
+                with warnings.catch_warnings(record=True):
+                    warnings.simplefilter("always")  # python2 requires this so other tests can trigger
+                    out_cpu = F.affine_grid(input_cpu, sz, align_corners=align_corners)
+                gradients = torch.randn(out_cpu.size())
+                out_cpu.backward(gradients)
+                input_device = input_cpu.detach().to(device).requires_grad_()
+                with warnings.catch_warnings(record=True):
+                    warnings.simplefilter("always")  # python2 requires this so other tests can trigger
+                    out_device = F.affine_grid(input_device, sz, align_corners=align_corners)
+                out_device.backward(gradients.to(device))
+                self.assertEqual(out_cpu, out_device)
+                self.assertEqual(input_cpu.grad, input_device.grad)
 
 
 class TestFunctionalPickle(TestCase):
