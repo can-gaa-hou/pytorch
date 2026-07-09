@@ -40,14 +40,14 @@ from torch.testing._internal.common_utils import dtype_name, freeze_rng_state, r
     IS_PPC, IS_ARM64, IS_MACOS, IS_WINDOWS, IS_CPU_CAPABILITY_SVE, IS_CPU_EXT_SVE_SUPPORTED, xfailIf, \
     parametrize as parametrize_test, subtest, instantiate_parametrized_tests, \
     skipIfTorchDynamo, gcIfJetson, set_default_dtype, skipIfNoCuteDSL, with_ieee_matmul_precision
-from torch.testing._internal.common_cuda import TEST_CUDA, TEST_MULTIGPU, TEST_CUDNN, \
+from torch.testing._internal.common_cuda import TEST_CUDA, TEST_CUDNN, \
     SM80OrLater, SM90OrLater, _get_torch_rocm_version
 from torch.testing._internal.common_nn import NNTestCase, NewModuleTest, CriterionTest, \
     module_tests, criterion_tests, loss_reference_fns, _create_basic_net, \
     ctcloss_reference, get_new_module_tests, single_batch_reference_fn, _test_bfloat16_ops, _test_module_empty_input
 from torch.testing._internal.common_device_type import dtypesIfMPS, instantiate_device_type_tests, dtypes, \
     dtypesIfCUDA, precisionOverride, onlyCUDA, onlyCPU, onlyAccelerator, \
-    skipCUDAIf, skipMPSIf, skipMPS, \
+    skipCUDAIf, skipCUDAIfNoCudnn, skipMPSIf, skipMPS, \
     onlyNativeDeviceTypes, deviceCountAtLeast, largeTensorTest, expectedFailureMeta, expectedFailureMPS, \
     skipMeta, get_all_device_types
 from torch.testing._internal.common_modules import module_inputs_torch_nn_LinearCrossEntropyLoss
@@ -2677,15 +2677,6 @@ tensor(..., device='meta', size=(1,), requires_grad=True)""")
                                                 [2.42240309, 0.0354595, -0.60659063, -0.05378816]]]))
             torch.testing.assert_close(result, ref_output, rtol=1e-5, atol=0)
 
-    @unittest.skipIf(not (TEST_CUDNN and TEST_MULTIGPU), 'CUDNN or multi-gpu not available')
-    def test_cudnn_rnn_dropout_states_device(self):
-        rnn = nn.RNN(10, 20, num_layers=2, dropout=.5)
-        device = 1
-        input = torch.randn(5, 4, 10).cuda(device)
-        rnn.cuda(device)
-        hx = torch.randn(2, 4, 20).cuda(device)
-        output = rnn(input, hx)
-
     def test_cudnn_forward_exception(self):
         rnns = [
             (nn.LSTM(10, 20, batch_first=True), (torch.zeros(1, 2, 19), torch.zeros(1, 2, 19))),
@@ -2698,99 +2689,6 @@ tensor(..., device='meta', size=(1,), requires_grad=True)""")
         for rnn, hidden in rnns:
             self.assertRaisesRegex(RuntimeError, "Expected hidden.*size.*got", rnn, x_right, hidden)
             self.assertRaisesRegex(RuntimeError, re.escape("input.size(-1) must be equal to input_size"), rnn, x_wrong)
-
-    @unittest.skipIf(not TEST_CUDNN, 'CUDNN not available')
-    def test_cudnn_weight_format(self):
-        rnns = [
-            nn.LSTM(10, 20, batch_first=True),
-            nn.LSTM(10, 20, batch_first=True, proj_size=10),
-            nn.GRU(10, 20, batch_first=True),
-            nn.RNN(10, 20, batch_first=True)
-        ]
-        # ROCm RNN does not issue warning about single contig chunk of memory, so don't assert it
-        first_warn = not torch.version.hip
-        for rnn in rnns:
-            rnn.cuda()
-            input = torch.randn(5, 4, 10, requires_grad=True, device="cuda")
-            hx = torch.randn(1, 5, 20, requires_grad=True, device="cuda")
-            all_vars = [input, hx] + list(rnn.parameters())
-            if isinstance(rnn, nn.LSTM):
-                # LSTM with projections has different hx size
-                if rnn.proj_size > 0:
-                    hx = torch.randn(1, 5, 10, requires_grad=True, device="cuda")
-                    all_vars[1] = hx
-                cx = torch.randn(1, 5, 20, requires_grad=True, device="cuda")
-                all_vars[2:2] = [cx]
-                hx = (hx, cx)
-
-            output = rnn(input, hx)
-            output[0].sum().backward()
-            grads = [v.grad.data.clone() for v in all_vars]
-            for v in all_vars:
-                v.grad.data.zero_()
-
-            # Weights will no longer view onto the same chunk of memory
-            weight = all_vars[4]
-            weight_data = weight.data.clone()
-            with torch.no_grad():
-                weight.set_(weight_data)
-
-            for _ in range(2):
-                with warnings.catch_warnings(record=True) as w:
-                    output_noncontig = rnn(input, hx)
-                if first_warn:
-                    self.assertEqual(len(w), 1)
-                    self.assertIn('weights are not part of single contiguous chunk of memory', w[0].message.args[0])
-                    first_warn = False
-                    warnings.resetwarnings()
-                output_noncontig[0].sum().backward()
-                grads_noncontig = [v.grad.data.clone() for v in all_vars]
-                for v in all_vars:
-                    v.grad.data.zero_()
-                self.assertEqual(output, output_noncontig)
-                self.assertEqual(grads_noncontig, grads)
-
-            # Make sure these still share storage
-            weight_data[:] = 4
-            self.assertEqual(weight_data, all_vars[4].data)
-
-    @unittest.skipIf(not TEST_CUDNN, 'CUDNN not available')
-    @tf32_on_and_off
-    def test_cudnn_weight_tying(self):
-        rnns = [
-            nn.LSTM(10, 20, batch_first=True, bidirectional=True),
-            nn.LSTM(10, 20, batch_first=True, bidirectional=True, proj_size=10),
-            nn.GRU(10, 20, batch_first=True, bidirectional=True),
-            nn.RNN(10, 20, batch_first=True, bidirectional=True)
-        ]
-        for rnn in rnns:
-            rnn.bias_ih_l0_reverse = rnn.bias_ih_l0
-            rnn.cuda()
-            input = torch.randn(5, 4, 10, requires_grad=True, device="cuda")
-            hx = torch.randn(2, 5, 20, requires_grad=True, device="cuda")
-            all_vars = [input, hx] + list(rnn.parameters())
-            opt = torch.optim.SGD(rnn.parameters(), lr=0.1)
-            opt.zero_grad()
-            if isinstance(rnn, nn.LSTM):
-                # LSTM with projections has different hx size
-                if rnn.proj_size > 0:
-                    hx = torch.randn(2, 5, 10, requires_grad=True, device="cuda")
-                    all_vars[1] = hx
-                cx = torch.randn(2, 5, 20, requires_grad=True, device="cuda")
-                all_vars[2:2] = [cx]
-                hx = (hx, cx)
-
-            with warnings.catch_warnings(record=True) as w:
-                output = rnn(input, hx)
-            output[0].sum().backward()
-
-            opt.step()
-            with warnings.catch_warnings(record=True) as w:
-                output_cuda = rnn(input, hx)
-            rnn.cpu()
-            hx = (hx[0].cpu(), hx[1].cpu()) if isinstance(rnn, nn.LSTM) else hx.cpu()
-            output_cpu = rnn(input.cpu(), hx)
-            self.assertEqual(output_cuda, output_cpu)
 
 
     def test_transformer_args_check(self):
@@ -3373,38 +3271,6 @@ tensor(..., device='meta', size=(1,), requires_grad=True)""")
     def test_RNN_cpu_vs_cudnn_with_dropout(self):
         # Because of dropout randomness, can only compare dropout=0 and dropout=1
         self._test_RNN_cpu_vs_cudnn(1)
-
-    @unittest.skipIf(not TEST_CUDNN, "needs cudnn")
-    @tf32_on_and_off
-    def test_RNN_cudnn_weight_norm(self):
-        input_size = 10
-        hidden_size = 6
-        num_layers = 2
-        seq_length = 7
-        batch = 6
-
-        # runs on CPU to acquire expected output
-        def check_weight_norm(m, name):
-            input = torch.randn(seq_length, batch, input_size)
-            expected_output = m(input)
-
-            # adds weight normalization
-            m = torch.nn.utils.weight_norm(m, name=name)
-
-            # moves to CUDA
-            m = m.cuda()
-            input = input.cuda()
-
-            # otherwise, subsequent warnings will be hidden, and further tests rely on them
-            warnings.simplefilter("always")
-            self.assertEqual(m(input), expected_output)
-
-            # remove weight norm
-            m = torch.nn.utils.remove_weight_norm(m, name=name)
-            self.assertEqual(m(input), expected_output)
-
-        check_weight_norm(nn.LSTM(input_size, hidden_size, num_layers), 'weight_hh_l0')
-        check_weight_norm(nn.LSTM(input_size, hidden_size, num_layers, proj_size=3), 'weight_hr_l0')
 
     @unittest.skipIf(not TEST_CUDNN, "needs cudnn")
     @set_default_dtype(torch.double)
@@ -15910,6 +15776,145 @@ if __name__ == '__main__':
                                               )).to(device)
             self.assertEqual(tuple(result.shape), tuple(ref_output.shape))
             torch.testing.assert_close(result, ref_output, rtol=1e-7, atol=1e-5)
+
+    @onlyCUDA
+    @skipCUDAIfNoCudnn
+    @deviceCountAtLeast(2)
+    def test_cudnn_rnn_dropout_states_device(self, devices):
+        rnn = nn.RNN(10, 20, num_layers=2, dropout=.5)
+        device = devices[1]
+        input = torch.randn(5, 4, 10).to(device)
+        rnn.to(device)
+        hx = torch.randn(2, 4, 20).to(device)
+        output = rnn(input, hx)
+
+    @onlyCUDA
+    @skipCUDAIfNoCudnn
+    def test_cudnn_weight_format(self, device):
+        rnns = [
+            nn.LSTM(10, 20, batch_first=True),
+            nn.LSTM(10, 20, batch_first=True, proj_size=10),
+            nn.GRU(10, 20, batch_first=True),
+            nn.RNN(10, 20, batch_first=True)
+        ]
+        # ROCm RNN does not issue warning about single contig chunk of memory, so don't assert it
+        first_warn = not torch.version.hip
+        for rnn in rnns:
+            rnn.to(device)
+            input = torch.randn(5, 4, 10, requires_grad=True, device=device)
+            hx = torch.randn(1, 5, 20, requires_grad=True, device=device)
+            all_vars = [input, hx] + list(rnn.parameters())
+            if isinstance(rnn, nn.LSTM):
+                # LSTM with projections has different hx size
+                if rnn.proj_size > 0:
+                    hx = torch.randn(1, 5, 10, requires_grad=True, device=device)
+                    all_vars[1] = hx
+                cx = torch.randn(1, 5, 20, requires_grad=True, device=device)
+                all_vars[2:2] = [cx]
+                hx = (hx, cx)
+
+            output = rnn(input, hx)
+            output[0].sum().backward()
+            grads = [v.grad.data.clone() for v in all_vars]
+            for v in all_vars:
+                v.grad.data.zero_()
+
+            # Weights will no longer view onto the same chunk of memory
+            weight = all_vars[4]
+            weight_data = weight.data.clone()
+            with torch.no_grad():
+                weight.set_(weight_data)
+
+            for _ in range(2):
+                with warnings.catch_warnings(record=True) as w:
+                    output_noncontig = rnn(input, hx)
+                if first_warn:
+                    self.assertEqual(len(w), 1)
+                    self.assertIn('weights are not part of single contiguous chunk of memory', w[0].message.args[0])
+                    first_warn = False
+                    warnings.resetwarnings()
+                output_noncontig[0].sum().backward()
+                grads_noncontig = [v.grad.data.clone() for v in all_vars]
+                for v in all_vars:
+                    v.grad.data.zero_()
+                self.assertEqual(output, output_noncontig)
+                self.assertEqual(grads_noncontig, grads)
+
+            # Make sure these still share storage
+            weight_data[:] = 4
+            self.assertEqual(weight_data, all_vars[4].data)
+
+    @onlyCUDA
+    @skipCUDAIfNoCudnn
+    @tf32_on_and_off()
+    def test_cudnn_weight_tying(self, device):
+        rnns = [
+            nn.LSTM(10, 20, batch_first=True, bidirectional=True),
+            nn.LSTM(10, 20, batch_first=True, bidirectional=True, proj_size=10),
+            nn.GRU(10, 20, batch_first=True, bidirectional=True),
+            nn.RNN(10, 20, batch_first=True, bidirectional=True)
+        ]
+        for rnn in rnns:
+            rnn.bias_ih_l0_reverse = rnn.bias_ih_l0
+            rnn.to(device)
+            input = torch.randn(5, 4, 10, requires_grad=True, device=device)
+            hx = torch.randn(2, 5, 20, requires_grad=True, device=device)
+            all_vars = [input, hx] + list(rnn.parameters())
+            opt = torch.optim.SGD(rnn.parameters(), lr=0.1)
+            opt.zero_grad()
+            if isinstance(rnn, nn.LSTM):
+                # LSTM with projections has different hx size
+                if rnn.proj_size > 0:
+                    hx = torch.randn(2, 5, 10, requires_grad=True, device=device)
+                    all_vars[1] = hx
+                cx = torch.randn(2, 5, 20, requires_grad=True, device=device)
+                all_vars[2:2] = [cx]
+                hx = (hx, cx)
+
+            with warnings.catch_warnings(record=True) as w:
+                output = rnn(input, hx)
+            output[0].sum().backward()
+
+            opt.step()
+            with warnings.catch_warnings(record=True) as w:
+                output_device = rnn(input, hx)
+            rnn.cpu()
+            hx = (hx[0].cpu(), hx[1].cpu()) if isinstance(rnn, nn.LSTM) else hx.cpu()
+            output_cpu = rnn(input.cpu(), hx)
+            self.assertEqual(output_device, output_cpu)
+
+    @onlyCUDA
+    @skipCUDAIfNoCudnn
+    @tf32_on_and_off()
+    def test_RNN_cudnn_weight_norm(self, device):
+        input_size = 10
+        hidden_size = 6
+        num_layers = 2
+        seq_length = 7
+        batch = 6
+
+        # runs on CPU to acquire expected output
+        def check_weight_norm(m, name):
+            input = torch.randn(seq_length, batch, input_size)
+            expected_output = m(input)
+
+            # adds weight normalization
+            m = torch.nn.utils.weight_norm(m, name=name)
+
+            # moves to the device
+            m = m.to(device)
+            input = input.to(device)
+
+            # otherwise, subsequent warnings will be hidden, and further tests rely on them
+            warnings.simplefilter("always")
+            self.assertEqual(m(input), expected_output)
+
+            # remove weight norm
+            m = torch.nn.utils.remove_weight_norm(m, name=name)
+            self.assertEqual(m(input), expected_output)
+
+        check_weight_norm(nn.LSTM(input_size, hidden_size, num_layers), 'weight_hh_l0')
+        check_weight_norm(nn.LSTM(input_size, hidden_size, num_layers, proj_size=3), 'weight_hr_l0')
 
 
 class TestFunctionalPickle(TestCase):
