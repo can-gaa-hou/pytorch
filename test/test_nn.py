@@ -3878,41 +3878,6 @@ tensor(..., device='meta', size=(1,), requires_grad=True)""")
         self.assertEqual(out, torch.ones(2, dtype=torch.float))
 
 
-    def test_grid_sample_error_checking(self):
-        input = torch.empty(1, 1, 2, 2)
-        grid = torch.empty(1, 1, 1, 2)
-
-        # assert no error
-        F.grid_sample(input, grid, align_corners=False)
-
-        with self.assertRaisesRegex(ValueError, "but got: 'garbage'"):
-            F.grid_sample(input, grid, mode='garbage', align_corners=False)
-
-        with self.assertRaisesRegex(ValueError, "but got: 'garbage'"):
-            F.grid_sample(input, grid, padding_mode='garbage', align_corners=False)
-
-        with self.assertRaisesRegex(RuntimeError, "expected grid to have size 1 in last dimension"):
-            F.grid_sample(input[0], grid, align_corners=False)
-
-        with self.assertRaisesRegex(RuntimeError, "expected grid to have size 2 in last dimension"):
-            F.grid_sample(input, torch.empty(1, 1, 1, 1, 3), align_corners=False)
-
-        with self.assertRaisesRegex(RuntimeError, "expected grid and input to have same batch size"):
-            F.grid_sample(input, torch.empty(2, 1, 1, 2), align_corners=False)
-
-        with self.assertRaisesRegex(RuntimeError, "expected grid to have size 2 in last dimension"):
-            F.grid_sample(input, torch.empty(1, 1, 1, 3), align_corners=False)
-
-        with self.assertRaisesRegex(RuntimeError, "expected input to have non-empty spatial dimensions"):
-            F.grid_sample(torch.empty(1, 1, 0, 2), grid, align_corners=False)
-
-        with self.assertRaisesRegex(RuntimeError, "bicubic interpolation only supports 4D input"):
-            F.grid_sample(torch.empty(1, 1, 2, 2, 2), torch.empty(1, 1, 1, 1, 3), mode='bicubic')
-
-        if TEST_CUDA:
-            with self.assertRaisesRegex(RuntimeError, "Expected all tensors to be on the same device"):
-                F.grid_sample(input.cuda(), grid, align_corners=False)
-
     def test_affine_grid_error_checking(self):
         # 2D affine
         theta = torch.empty(1, 2, 3, dtype=torch.double)
@@ -4011,135 +3976,6 @@ tensor(..., device='meta', size=(1,), requires_grad=True)""")
         theta_grad_cf = theta.grad
 
         self.assertEqual(theta_grad_cf, theta_grad_cl)
-
-    @set_default_dtype(torch.double)
-    def test_grid_sample_3d(self):
-        # Backward pass of native C++ and CUDA kernels branch depending on whether input requires gradient,
-        # so we test both cases.
-        def test(N, C, D, H, W, mode, padding_mode, align_corners, input_requires_grad):
-            def test_shape(N, C, ID, IH, IW, D, H, W, mode, padding_mode, align_corners):
-                input_cpu = torch.randn(C, N, ID, IH, IW).transpose(0, 1).requires_grad_(input_requires_grad)
-                grid_cpu = torch.randn(D, N, H, W, 3).transpose(0, 1).requires_grad_()
-                out_cpu = F.grid_sample(input_cpu, grid_cpu, mode=mode, padding_mode=padding_mode,
-                                        align_corners=align_corners)
-                self.assertTrue(out_cpu.size() == torch.Size([N, C, D, H, W]))
-
-                gradients = torch.randn_like(out_cpu)
-                out_cpu.backward(gradients)
-
-                if TEST_CUDA:
-                    input_cuda = input_cpu.detach().transpose(0, 1).cuda().transpose(0, 1).requires_grad_(input_requires_grad)
-                    grid_cuda = grid_cpu.detach().transpose(0, 1).cuda().transpose(0, 1).requires_grad_()
-                    out_cuda = F.grid_sample(input_cuda, grid_cuda, mode=mode, padding_mode=padding_mode,
-                                             align_corners=align_corners)
-                    self.assertEqual(out_cpu, out_cuda)
-
-                    out_cuda.backward(gradients.cuda())
-                    if input_requires_grad:
-                        self.assertEqual(input_cpu.grad, input_cuda.grad)
-                    self.assertEqual(grid_cpu.grad, grid_cuda.grad, atol=5e-5, rtol=0)
-
-                    # check that zero-dimensional input strides don't error out
-                    base_input = torch.randn(N, C, 1, IH, IW)
-                    input_cpu = base_input.expand_as(input_cuda).requires_grad_(input_requires_grad)
-                    grid_cpu = torch.randn(N, D, H, W, 3, requires_grad=True)
-                    out_cpu = F.grid_sample(input_cpu, grid_cpu, mode=mode, padding_mode=padding_mode,
-                                            align_corners=align_corners)
-
-                    input_cuda = base_input.cuda().expand_as(input_cuda).requires_grad_(input_requires_grad)
-                    grid_cuda = grid_cpu.detach().cuda().requires_grad_()
-                    out_cuda = F.grid_sample(input_cuda, grid_cuda, mode=mode, padding_mode=padding_mode,
-                                             align_corners=align_corners)
-                    self.assertEqual(out_cpu, out_cuda)
-
-            # test same size output
-            test_shape(N, C, D, H, W, D, H, W, mode, padding_mode, align_corners)
-
-            # test larger output
-            N = random.randint(2, 7)
-            C = random.randint(2, 5)
-            ID = random.randint(2, 7)
-            IH = random.randint(2, 7)
-            IW = random.randint(2, 7)
-            D = random.randint(ID + 1, 10)
-            H = random.randint(IH + 1, 10)
-            W = random.randint(IW + 1, 10)
-            test_shape(N, C, ID, IH, IW, D, H, W, mode, padding_mode, align_corners)
-
-            # test smaller output
-            N = random.randint(2, 7)
-            C = random.randint(2, 5)
-            ID = random.randint(2, 7)
-            IH = random.randint(2, 7)
-            IW = random.randint(2, 7)
-            D = random.randint(2, ID)
-            H = random.randint(2, IH)
-            W = random.randint(2, IW)
-            test_shape(N, C, ID, IH, IW, D, H, W, mode, padding_mode, align_corners)
-
-            # test 1x1 inpput
-            N = random.randint(2, 7)
-            C = random.randint(2, 7)
-            ID = 1
-            IH = 1
-            IW = 1
-            H = random.randint(2, 5)
-            W = random.randint(2, 5)
-            test_shape(N, C, ID, IH, IW, D, H, W, mode, padding_mode, align_corners)
-
-            # testing empty grid
-            N = random.randint(2, 7)
-            C = random.randint(2, 5)
-            ID = random.randint(2, 7)
-            IH = random.randint(2, 7)
-            IW = random.randint(2, 7)
-            D = random.randint(3, ID + 2)
-            W = random.randint(3, IW + 2)
-            test_shape(N, C, ID, IH, IW, D, 0, W, mode, padding_mode, align_corners)
-
-            # testing empty channel
-            N = random.randint(2, 7)
-            ID = random.randint(2, 5)
-            IH = random.randint(2, 7)
-            IW = random.randint(2, 7)
-            D = random.randint(3, ID + 2)
-            H = random.randint(3, IH + 2)
-            W = random.randint(3, IW + 2)
-            test_shape(N, 0, ID, IH, IW, D, H, W, mode, padding_mode, align_corners)
-
-            # testing empty batch
-            C = random.randint(2, 5)
-            ID = random.randint(2, 7)
-            IH = random.randint(2, 7)
-            IW = random.randint(2, 7)
-            D = random.randint(3, ID + 2)
-            H = random.randint(3, IH + 2)
-            W = random.randint(3, IW + 2)
-            test_shape(0, C, ID, IH, IW, D, H, W, mode, padding_mode, align_corners)
-
-        for mode in ('bilinear', 'nearest'):
-            for padding_mode in ('zeros', 'border', 'reflection'):
-                for align_corners in (True, False):
-                    # do gradcheck
-                    N = random.randint(2, 5)
-                    C = random.randint(2, 4)
-                    D = random.randint(2, 5)
-                    H = random.randint(2, 5)
-                    W = random.randint(2, 5)
-                    input = torch.randn(N, C, D, H, W, requires_grad=True)
-                    grid = torch.randn(N, D, H, W, 3, requires_grad=True)
-                    self.assertTrue(gradcheck(
-                        lambda inp, grid: F.grid_sample(inp, grid, mode=mode, padding_mode=padding_mode,
-                                                        align_corners=align_corners),
-                        (input, grid)))
-                    input = input.requires_grad_(False)
-                    self.assertTrue(gradcheck(
-                        lambda grid: F.grid_sample(input, grid, mode=mode, padding_mode=padding_mode,
-                                                   align_corners=align_corners),
-                        (grid,)))
-
-                    for input_requires_grad in [False, True]:
-                        test(N, C, D, H, W, mode, padding_mode, align_corners, input_requires_grad)
 
     def test_grid_sample_nearest_neighbor_rounding_mode_consistency(self):
 
@@ -15909,6 +15745,173 @@ if __name__ == '__main__':
                         if TEST_CUDNN:
                             with cudnn.flags(enabled=False):
                                 test(N, C, H, W, mode, padding_mode, align_corners, input_requires_grad)
+
+    def test_grid_sample_error_checking(self, device):
+        input = torch.empty(1, 1, 2, 2, device=device)
+        grid = torch.empty(1, 1, 1, 2, device=device)
+
+        # assert no error
+        F.grid_sample(input, grid, align_corners=False)
+
+        with self.assertRaisesRegex(ValueError, "but got: 'garbage'"):
+            F.grid_sample(input, grid, mode='garbage', align_corners=False)
+
+        with self.assertRaisesRegex(ValueError, "but got: 'garbage'"):
+            F.grid_sample(input, grid, padding_mode='garbage', align_corners=False)
+
+        with self.assertRaisesRegex(RuntimeError, "expected grid to have size 1 in last dimension"):
+            F.grid_sample(input[0], grid, align_corners=False)
+
+        with self.assertRaisesRegex(RuntimeError, "expected grid to have size 2 in last dimension"):
+            F.grid_sample(input, torch.empty(1, 1, 1, 1, 3, device=device), align_corners=False)
+
+        with self.assertRaisesRegex(RuntimeError, "expected grid and input to have same batch size"):
+            F.grid_sample(input, torch.empty(2, 1, 1, 2, device=device), align_corners=False)
+
+        with self.assertRaisesRegex(RuntimeError, "expected grid to have size 2 in last dimension"):
+            F.grid_sample(input, torch.empty(1, 1, 1, 3, device=device), align_corners=False)
+
+        with self.assertRaisesRegex(RuntimeError, "expected input to have non-empty spatial dimensions"):
+            F.grid_sample(torch.empty(1, 1, 0, 2, device=device), grid, align_corners=False)
+
+        with self.assertRaisesRegex(RuntimeError, "bicubic interpolation only supports 4D input"):
+            F.grid_sample(torch.empty(1, 1, 2, 2, 2, device=device),
+                          torch.empty(1, 1, 1, 1, 3, device=device), mode='bicubic')
+
+        if torch.device(device).type != 'cpu':
+            with self.assertRaisesRegex(RuntimeError, "Expected all tensors to be on the same device"):
+                F.grid_sample(input, grid.cpu(), align_corners=False)
+
+    @skipMPS
+    @set_default_dtype(torch.double)
+    def test_grid_sample_3d(self, device):
+        # Backward pass of native C++ and CUDA kernels branch depending on whether input requires gradient,
+        # so we test both cases.
+        def test(N, C, D, H, W, mode, padding_mode, align_corners, input_requires_grad):
+            def test_shape(N, C, ID, IH, IW, D, H, W, mode, padding_mode, align_corners):
+                input_cpu = torch.randn(C, N, ID, IH, IW).transpose(0, 1).requires_grad_(input_requires_grad)
+                grid_cpu = torch.randn(D, N, H, W, 3).transpose(0, 1).requires_grad_()
+                out_cpu = F.grid_sample(input_cpu, grid_cpu, mode=mode, padding_mode=padding_mode,
+                                        align_corners=align_corners)
+                self.assertTrue(out_cpu.size() == torch.Size([N, C, D, H, W]))
+
+                gradients = torch.randn_like(out_cpu)
+                out_cpu.backward(gradients)
+
+                if torch.device(device).type != 'cpu':
+                    input_device = input_cpu.detach().transpose(0, 1).to(device).transpose(0, 1).requires_grad_(
+                        input_requires_grad)
+                    grid_device = grid_cpu.detach().transpose(0, 1).to(device).transpose(0, 1).requires_grad_()
+                    out_device = F.grid_sample(input_device, grid_device, mode=mode, padding_mode=padding_mode,
+                                               align_corners=align_corners)
+                    self.assertEqual(out_cpu, out_device)
+
+                    out_device.backward(gradients.to(device))
+                    if input_requires_grad:
+                        self.assertEqual(input_cpu.grad, input_device.grad)
+                    self.assertEqual(grid_cpu.grad, grid_device.grad, atol=5e-5, rtol=0)
+
+                    # check that zero-dimensional input strides don't error out
+                    base_input = torch.randn(N, C, 1, IH, IW)
+                    input_cpu = base_input.expand_as(input_device).requires_grad_(input_requires_grad)
+                    grid_cpu = torch.randn(N, D, H, W, 3, requires_grad=True)
+                    out_cpu = F.grid_sample(input_cpu, grid_cpu, mode=mode, padding_mode=padding_mode,
+                                            align_corners=align_corners)
+
+                    input_device = base_input.to(device).expand_as(input_device).requires_grad_(input_requires_grad)
+                    grid_device = grid_cpu.detach().to(device).requires_grad_()
+                    out_device = F.grid_sample(input_device, grid_device, mode=mode, padding_mode=padding_mode,
+                                               align_corners=align_corners)
+                    self.assertEqual(out_cpu, out_device)
+
+            # test same size output
+            test_shape(N, C, D, H, W, D, H, W, mode, padding_mode, align_corners)
+
+            # test larger output
+            N = random.randint(2, 7)
+            C = random.randint(2, 5)
+            ID = random.randint(2, 7)
+            IH = random.randint(2, 7)
+            IW = random.randint(2, 7)
+            D = random.randint(ID + 1, 10)
+            H = random.randint(IH + 1, 10)
+            W = random.randint(IW + 1, 10)
+            test_shape(N, C, ID, IH, IW, D, H, W, mode, padding_mode, align_corners)
+
+            # test smaller output
+            N = random.randint(2, 7)
+            C = random.randint(2, 5)
+            ID = random.randint(2, 7)
+            IH = random.randint(2, 7)
+            IW = random.randint(2, 7)
+            D = random.randint(2, ID)
+            H = random.randint(2, IH)
+            W = random.randint(2, IW)
+            test_shape(N, C, ID, IH, IW, D, H, W, mode, padding_mode, align_corners)
+
+            # test 1x1 inpput
+            N = random.randint(2, 7)
+            C = random.randint(2, 7)
+            ID = 1
+            IH = 1
+            IW = 1
+            H = random.randint(2, 5)
+            W = random.randint(2, 5)
+            test_shape(N, C, ID, IH, IW, D, H, W, mode, padding_mode, align_corners)
+
+            # testing empty grid
+            N = random.randint(2, 7)
+            C = random.randint(2, 5)
+            ID = random.randint(2, 7)
+            IH = random.randint(2, 7)
+            IW = random.randint(2, 7)
+            D = random.randint(3, ID + 2)
+            W = random.randint(3, IW + 2)
+            test_shape(N, C, ID, IH, IW, D, 0, W, mode, padding_mode, align_corners)
+
+            # testing empty channel
+            N = random.randint(2, 7)
+            ID = random.randint(2, 5)
+            IH = random.randint(2, 7)
+            IW = random.randint(2, 7)
+            D = random.randint(3, ID + 2)
+            H = random.randint(3, IH + 2)
+            W = random.randint(3, IW + 2)
+            test_shape(N, 0, ID, IH, IW, D, H, W, mode, padding_mode, align_corners)
+
+            # testing empty batch
+            C = random.randint(2, 5)
+            ID = random.randint(2, 7)
+            IH = random.randint(2, 7)
+            IW = random.randint(2, 7)
+            D = random.randint(3, ID + 2)
+            H = random.randint(3, IH + 2)
+            W = random.randint(3, IW + 2)
+            test_shape(0, C, ID, IH, IW, D, H, W, mode, padding_mode, align_corners)
+
+        for mode in ('bilinear', 'nearest'):
+            for padding_mode in ('zeros', 'border', 'reflection'):
+                for align_corners in (True, False):
+                    # do gradcheck
+                    N = random.randint(2, 5)
+                    C = random.randint(2, 4)
+                    D = random.randint(2, 5)
+                    H = random.randint(2, 5)
+                    W = random.randint(2, 5)
+                    input = torch.randn(N, C, D, H, W, requires_grad=True)
+                    grid = torch.randn(N, D, H, W, 3, requires_grad=True)
+                    self.assertTrue(gradcheck(
+                        lambda inp, grid: F.grid_sample(inp, grid, mode=mode, padding_mode=padding_mode,
+                                                        align_corners=align_corners),
+                        (input, grid)))
+                    input = input.requires_grad_(False)
+                    self.assertTrue(gradcheck(
+                        lambda grid: F.grid_sample(input, grid, mode=mode, padding_mode=padding_mode,
+                                                   align_corners=align_corners),
+                        (grid,)))
+
+                    for input_requires_grad in [False, True]:
+                        test(N, C, D, H, W, mode, padding_mode, align_corners, input_requires_grad)
 
 
 class TestFunctionalPickle(TestCase):
