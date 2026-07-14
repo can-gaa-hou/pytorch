@@ -1588,6 +1588,9 @@ class GraphLowering(torch.fx.Interpreter):
         if (
             config.aot_inductor.use_runtime_constant_folding
             or config.always_keep_tensor_constants
+            # Inlining a constant generates a pointwise kernel, which lite
+            # mode's fallback-everything contract does not allow.
+            or config.fallback_by_default
             or unsupported_output_tensor(value)
             or target in self.mutated_named_buffers
         ):

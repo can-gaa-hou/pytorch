@@ -39,8 +39,8 @@ from .aoti_hipify_utils import maybe_hipify_code_wrapper
 from .common import get_device_op_overrides, IndentedBuffer, Kernel
 from .cpp_utils import (
     cexpr,
-    DEVICE_TO_ATEN,
     DEVICE_TO_INT,
+    device_type_to_aten,
     DTYPE_TO_ATEN,
     DTYPE_TO_CPP,
     LAYOUT_TO_ATEN,
@@ -518,6 +518,11 @@ class CppWrapperCpu(PythonWrapperCodegen):
         return f"#include <torch/csrc/inductor/aoti_include/{device}.h>"
 
     def add_device_include(self, device: str) -> None:
+        # PrivateUse1 backends use their registered name as the device string,
+        # but the runtime headers are shipped under the generic name.
+        if device == torch._C._get_privateuse1_backend_name():
+            device = "privateuse1"
+
         if device in self.included_devices:
             return
 
@@ -2355,9 +2360,7 @@ class CppWrapperCpu(PythonWrapperCodegen):
             self._codegen_assert_size_stride(code, name, size, stride, op_name)
 
     def codegen_device(self, device):
-        if device.type not in DEVICE_TO_ATEN:
-            raise AssertionError(device.type + " not found in DEVICE_TO_ATEN")
-        device_str = DEVICE_TO_ATEN[device.type][5:].lower()  # remove "at::k"
+        device_str = device_type_to_aten(device.type)[5:].lower()  # remove "at::k"
         self.used_cached_devices.add(device_str)
         return f"cached_torch_device_type_{device_str}, {device.index if device.index else 0}"
 
@@ -3057,6 +3060,11 @@ class CppWrapperCpu(PythonWrapperCodegen):
             )
 
             if isinstance(arg_type, torch.TensorType):
+                if isinstance(arg, (bool, float, int)):
+                    # A scalar bound to a Tensor-typed parameter is serialized
+                    # by value in the extern kernel node; the proxy executor
+                    # materializes the tensor, so nothing is passed here.
+                    return
                 if not isinstance(arg, inductor_tensor_buffers):
                     raise AssertionError(f"got {type(arg)}")
                 new_tensor_args.append(f"{arg.codegen_reference()}")
@@ -3848,13 +3856,9 @@ if (!custom_op_wrapper) {
                     return codegen_ivalue(raw_arg, arg_type.getElementType())
 
                 if isinstance(raw_arg, torch.device):
-                    if raw_arg.type not in DEVICE_TO_ATEN:
-                        raise AssertionError(
-                            raw_arg.type + " not found in DEVICE_TO_ATEN"
-                        )
                     return (
                         "c10::IValue(c10::Device("
-                        f"{DEVICE_TO_ATEN[raw_arg.type]}, "
+                        f"{device_type_to_aten(raw_arg.type)}, "
                         f"{raw_arg.index if raw_arg.index is not None else 0}))"
                     )
                 if isinstance(raw_arg, torch.dtype):

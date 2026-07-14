@@ -3687,6 +3687,10 @@ def _get_cpp_wrapper_header(device: str, aot_mode: bool = False) -> str:
     """Given a device type (and optionally whether we're in AOT Inductor mode), returns
     the path to the cpp_wrapper header file to be precompiled."""
     base_device = device.split(":", maxsplit=1)[0]
+    # PrivateUse1 backends use their registered name as the device string, but
+    # the headers are shipped under the generic name.
+    if base_device == torch._C._get_privateuse1_backend_name():
+        base_device = "privateuse1"
     is_array_ref = config.aot_inductor.allow_stack_allocation and base_device == "cpu"
     return (
         "torch/csrc/inductor/"

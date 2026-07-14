@@ -47,12 +47,19 @@ struct ConstantBufferSet {
   std::shared_ptr<std::vector<ConstantHandle>> array;
   ConstantState fold_state{ConstantState::NONE};
 
-  void* ensure_blob(size_t blob_size) {
+  void* ensure_blob(
+      size_t blob_size,
+      [[maybe_unused]] int32_t device_type,
+      [[maybe_unused]] int32_t device_idx) {
     if (!blob) {
 #if defined(USE_CUDA) || defined(USE_XPU) || defined(USE_MPS)
       blob = RAII_gpuMalloc(blob_size);
 #else
-      blob = RAII_cpuMalloc(blob_size);
+      if (device_type == aoti_torch_device_type_privateuse1()) {
+        blob = RAII_privateuse1Malloc(blob_size, device_idx);
+      } else {
+        blob = RAII_cpuMalloc(blob_size);
+      }
 #endif
     }
     return blob.get();
@@ -649,6 +656,7 @@ class AOTInductorModelContainer {
     }
 
     int32_t model_device_type = models_[0]->get_device_type();
+    int32_t model_device_idx = models_[0]->get_device_idx();
 
     auto& target = use_inactive ? inactive() : active();
     auto& source = use_inactive ? active() : inactive();
@@ -744,8 +752,8 @@ class AOTInductorModelContainer {
             /* device_index = */ 0,
             &tensor_handle));
       } else {
-        auto* constants_blob_ptr =
-            static_cast<uint8_t*>(target.ensure_blob(blob_size_));
+        auto* constants_blob_ptr = static_cast<uint8_t*>(
+            target.ensure_blob(blob_size_, model_device_type, model_device_idx));
 
         // Move the data to container handled blob.
         uint8_t* internal_constants_ptr =
@@ -804,12 +812,30 @@ class AOTInductorModelContainer {
               cudaMemcpyDefault);
         }
 #else
-        memcpy(internal_constants_ptr, user_constant_ptr, constant_size);
+        if (model_device_type == aoti_torch_device_type_privateuse1()) {
+          // Source may be a CPU tensor (allow_h2d_copy) or a device tensor;
+          // wrap both sides and let the backend's copy kernel pick H2D/D2D.
+          int32_t src_device_type = 0;
+          int32_t src_device_idx = -1;
+          AOTI_TORCH_ERROR_CODE_CHECK(
+              aoti_torch_get_device_type(tensor, &src_device_type));
+          AOTI_TORCH_ERROR_CODE_CHECK(
+              aoti_torch_get_device_index(tensor, &src_device_idx));
+          device_blob_memcpy(
+              internal_constants_ptr,
+              model_device_type,
+              model_device_idx,
+              user_constant_ptr,
+              src_device_type,
+              src_device_idx,
+              static_cast<size_t>(constant_size));
+        } else {
+          memcpy(internal_constants_ptr, user_constant_ptr, constant_size);
+        }
 #endif
         // Generate Tensor from container handled blob.
         // We extract stride and offset from provided Tensor since we do not
         // guarantee that the tensor is contiguous.
-        int device_idx = models_[0]->get_device_idx();
         AOTI_TORCH_ERROR_CODE_CHECK(aoti_torch_create_tensor_from_blob(
             internal_constants_ptr,
             models_[0]->constant_ndim(idx),
@@ -818,7 +844,7 @@ class AOTInductorModelContainer {
             offset,
             dtype,
             model_device_type,
-            device_idx,
+            model_device_idx,
             &tensor_handle));
       }
 

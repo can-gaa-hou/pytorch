@@ -580,6 +580,19 @@ AOTI_TORCH_EXPORT AOTITorchError aoti_torch_get_current_stream(
 AOTI_TORCH_EXPORT AOTITorchError
 aoti_torch_get_current_device_index(int32_t* ret_device_index);
 
+AOTI_TORCH_EXPORT AOTITorchError
+aoti_torch_set_current_device_index(int32_t device_index);
+
+// Blocks until all work enqueued on the device has completed
+AOTI_TORCH_EXPORT AOTITorchError
+aoti_torch_synchronize_device(int32_t device_index);
+
+// Returns the name registered via c10::register_privateuse1_backend, or
+// "privateuseone" if no custom name has been registered yet. Once a custom
+// name is registered (write-once), the returned pointer stays valid for the
+// lifetime of the process.
+AOTI_TORCH_EXPORT const char* aoti_torch_get_privateuse1_backend_name();
+
 #ifdef USE_CUDA
 
 struct CUDAGuardOpaque;

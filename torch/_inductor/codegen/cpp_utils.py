@@ -86,6 +86,15 @@ DEVICE_TO_ATEN = {
     "mps": "at::kMPS",
 }
 
+
+def device_type_to_aten(device_type: str) -> str:
+    if device_type in DEVICE_TO_ATEN:
+        return DEVICE_TO_ATEN[device_type]
+    # PrivateUse1 backends register their device name at runtime.
+    if device_type == torch._C._get_privateuse1_backend_name():
+        return "at::kPrivateUse1"
+    raise AssertionError(device_type + " not found in DEVICE_TO_ATEN")
+
 LAYOUT_TO_ATEN = {
     torch.strided: "at::kStrided",
     torch._mkldnn: "at::kMkldnn",  # type: ignore[attr-defined]

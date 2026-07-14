@@ -9633,6 +9633,17 @@ class FallbackKernel(ExternKernelAlloc):
 
         V.extern_kernel_nodes.append(node)
 
+        # serialize_inputs only emits kwarg-only arguments that were
+        # explicitly provided; the proxy executor fills schema defaults for
+        # the omitted ones. Return None for those so the generated call
+        # arrays line up with the serialized node (None args are skipped).
+        omittable = OrderedSet(self.ordered_kwargs_for_cpp_kernel) - OrderedSet(
+            kwargs.keys()
+        )
+        ordered_kwargs = [
+            None if key in omittable else self.get_kwargs_value(key, **kwargs)
+            for key in self.ordered_kwargs_for_cpp_kernel
+        ]
         return [*args, *ordered_kwargs]
 
     @override
@@ -9649,7 +9660,15 @@ class FallbackKernel(ExternKernelAlloc):
             if V.graph.cpp_wrapper:
                 from torchgen.aoti.fallback_ops import inductor_fallback_ops
 
-                if str(kernel) not in inductor_fallback_ops:
+                device = self.get_device()
+                if (
+                    device is not None
+                    and device.type == torch._C._get_privateuse1_backend_name()
+                ):
+                    # No torchgen-ed C shim exists for out-of-tree PrivateUse1
+                    # backends; always dispatch through the proxy executor.
+                    self.use_runtime_dispatch = True
+                elif str(kernel) not in inductor_fallback_ops:
                     # C shim v2 is torchgen-ed, which should cover all aten ops.
                     # If you do hit a missed op, please update fallback_ops.py.
                     log.warning(

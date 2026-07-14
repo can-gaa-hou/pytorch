@@ -24,6 +24,7 @@
 #include <cstring>
 #include <fstream>
 #include <iostream>
+#include <mutex>
 #include <vector>
 
 #include <c10/core/Device.h>
@@ -1538,4 +1539,31 @@ AOTITorchError aoti_torch_get_current_stream(
 AOTITorchError aoti_torch_get_current_device_index(int32_t* ret_device_index) {
   AOTI_TORCH_CONVERT_EXCEPTION_TO_ERROR_CODE(
       { *ret_device_index = at::accelerator::getDeviceIndex(); });
+}
+
+AOTITorchError aoti_torch_set_current_device_index(int32_t device_index) {
+  AOTI_TORCH_CONVERT_EXCEPTION_TO_ERROR_CODE({
+    at::accelerator::setDeviceIndex(
+        static_cast<c10::DeviceIndex>(device_index));
+  });
+}
+
+AOTITorchError aoti_torch_synchronize_device(int32_t device_index) {
+  AOTI_TORCH_CONVERT_EXCEPTION_TO_ERROR_CODE({
+    at::accelerator::synchronizeDevice(
+        static_cast<c10::DeviceIndex>(device_index));
+  });
+}
+
+const char* aoti_torch_get_privateuse1_backend_name() {
+  // The registered name is write-once (c10::register_privateuse1_backend),
+  // but may not be set yet when this is first called. Latch the name only
+  // after registration so an early call cannot pin the default forever.
+  static std::mutex name_mutex;
+  static std::string name = "privateuseone";
+  std::lock_guard<std::mutex> lock(name_mutex);
+  if (name == "privateuseone" && c10::is_privateuse1_backend_registered()) {
+    name = c10::get_privateuse1_backend(/*lower_case=*/true);
+  }
+  return name.c_str();
 }
