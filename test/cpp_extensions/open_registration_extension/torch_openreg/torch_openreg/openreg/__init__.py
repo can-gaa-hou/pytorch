@@ -89,3 +89,22 @@ __all__ = [
     "get_rng_state",
     "set_rng_state",
 ]
+
+
+# Inductor codegen hooks, looked up by torch._inductor's
+# init_backend_registration on the registered device module. Resolved lazily
+# so importing torch_openreg does not pull in torch._inductor.
+_INDUCTOR_ATTRS = (
+    "Scheduling",
+    "PythonWrapperCodegen",
+    "CppWrapperCodegen",
+    "WrapperFxCodegen",
+)
+
+
+def __getattr__(name):
+    if name in _INDUCTOR_ATTRS:
+        from . import _inductor
+
+        return getattr(_inductor, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

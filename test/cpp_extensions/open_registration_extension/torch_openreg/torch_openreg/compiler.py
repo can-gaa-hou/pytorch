@@ -82,6 +82,10 @@ class OpenRegInterface(DeviceInterface):
         return True
 
     @staticmethod
+    def get_compute_capability(device=None):
+        return ""
+
+    @staticmethod
     def synchronize(device=None):
         pass
 
